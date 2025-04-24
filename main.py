@@ -6,28 +6,31 @@ from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from tavily import TavilyClient, InvalidAPIKeyError
 import requests
+from markdown2 import markdown
+import re
 
-# ✅ Direct API keys in this file
+# 🔐 API Keys
 GEMINI_API_KEY = "AIzaSyBSkA0V5nvGoK-NJl_G_VAx89ZcpuO-iyM"
-TAVILY_API_KEY = "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"  # Replace with your actual Tavily API key
+TAVILY_API_KEY = "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"
 
-# 🔧 Configure APIs
+# 🔧 API Config
 tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
-
 gemini_llm = ChatGoogleGenerativeAI(model="models/gemini-1.5-flash-latest", google_api_key=GEMINI_API_KEY)
 
-# 🌐 Agent 1: Web Research Agent using Tavily
+
+# 🌐 Agent 1 - Research
 def research_agent(query: str) -> str:
-    print("🔍 Research Agent activated...")
+    print("🔍 Research Agent Activated")
     try:
         result = tavily_client.search(query=query, include_answer=True)
         answer = result.get("answer", "")
         docs = "\n".join([doc.get("content", "") for doc in result.get("results", [])])
         return f"{answer}\n\n{docs}".strip()
     except InvalidAPIKeyError:
-        return "Error: The API key is invalid or missing. Please check your API key."
+        return "❌ Error: Invalid or missing API key."
 
-# ✍️ Agent 2: Answer Drafting Agent using Gemini
+
+# ✍️ Agent 2 - Drafting
 def drafting_agent(data: dict) -> str:
     query = data["query"]
     research_context = data["research"]
@@ -45,62 +48,119 @@ You are a highly intelligent AI expert. Use the context below to answer the user
     response = gemini_llm.invoke([HumanMessage(content=prompt)])
     return response.content.strip()
 
-# 🧠 Define the state schema
+
+# 🧠 State
 class ResearchState(dict):
     query: str
     research: str
     answer: str
 
-# 🧱 LangGraph: Define the graph
+
 builder = StateGraph(ResearchState)
-
-# Nodes
-builder.add_node("ResearchAgent", RunnableLambda(lambda state: {"query": state["query"], "research": research_agent(state["query"])}))
-builder.add_node("AnswerAgent", RunnableLambda(lambda state: {"query": state["query"], "research": state["research"], "answer": drafting_agent(state)}))
-
-# Edges
+builder.add_node("ResearchAgent",
+                 RunnableLambda(lambda state: {"query": state["query"], "research": research_agent(state["query"])}))
+builder.add_node("AnswerAgent", RunnableLambda(
+    lambda state: {"query": state["query"], "research": state["research"], "answer": drafting_agent(state)}))
 builder.set_entry_point("ResearchAgent")
 builder.add_edge("ResearchAgent", "AnswerAgent")
 builder.add_edge("AnswerAgent", END)
-
-# Build the graph
 graph = builder.compile()
 
-# 🚀 Run the system
+
 def run_deep_research_system(user_query: str):
     result = graph.invoke({"query": user_query})
     return result["answer"]
 
-# 🌐 Fetch Data from URL
+
 def fetch_web_data(url: str) -> str:
     try:
         response = requests.get(url)
         if response.status_code == 200:
             return response.text
         else:
-            return f"Error fetching data from {url}. HTTP Status: {response.status_code}"
+            return f"❌ Error fetching URL. HTTP {response.status_code}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"❌ Error: {str(e)}"
 
-# 📂 Read Data from File
+
 def read_file(file_path: str) -> str:
     try:
         with open(file_path, 'r') as file:
             return file.read()
     except Exception as e:
-        return f"Error reading file: {str(e)}"
+        return f"❌ Error reading file: {str(e)}"
 
-# 🧪 Create the Tkinter UI
+
+def markdown_to_pretty_text(markdown_text: str) -> str:
+    formatted_text = ""
+    lines = markdown_text.split("\n")
+
+    in_code_block = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Handle code blocks (```):
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            formatted_text += "\n" + ("─" * 50) + "\n" if in_code_block else "\n" + ("─" * 50) + "\n"
+            continue
+        if in_code_block:
+            formatted_text += line + "\n"
+            continue
+
+        # Headers
+        if stripped.startswith("# "):
+            header = stripped[2:].strip().upper()
+            formatted_text += f"\n\n{'=' * 50}\n{header}\n{'=' * 50}\n"
+        elif stripped.startswith("## "):
+            header = stripped[3:].strip().upper()
+            formatted_text += f"\n\n{'-' * 40}\n{header}\n{'-' * 40}\n"
+        elif stripped.startswith("### "):
+            header = stripped[4:].strip().capitalize()
+            formatted_text += f"\n\n{header}\n{'-' * len(header)}\n"
+        else:
+            # Bold
+            line = re.sub(r"\*\*(.*?)\*\*", lambda m: m.group(1).upper(), line)
+            # Italic
+            line = re.sub(r"\*(.*?)\*", lambda m: m.group(1).capitalize(), line)
+            # Inline code
+            line = re.sub(r"`(.*?)`", lambda m: f"[{m.group(1)}]", line)
+            # Strip HTML tags
+            line = re.sub(r"<[^>]+>", "", line)
+            formatted_text += line + "\n"
+
+    return formatted_text.strip()
+
+
+# 🧪 UI
 def create_ui():
     def on_query_submit():
         user_query = query_input.get("1.0", "end-1c").strip()
-
         if user_query:
+            processing_label.config(text="🔄 Processing...")
+            root.update_idletasks()
             result = run_deep_research_system(user_query)
+
+            # Convert Markdown to plain text with styling using the new function
+            plain_text_result = markdown(result, extras=["strip-html", "fenced-code-blocks", "tables"])
+            formatted_text = markdown_to_pretty_text(plain_text_result)
+
+            # Use the formatted text for display
+            plain_text_result = formatted_text.strip()
+            # Clear previous content
             result_text.delete("1.0", "end")
-            result_text.insert("1.0", result)
+
+            # Implement typewriter effect for plain text content
+            delay = 5  # Set delay for normal typing speed
+            for char in plain_text_result:
+                result_text.insert(tk.END, char)
+                result_text.update()
+                result_text.after(delay)
+
+            processing_label.config(text="")
         else:
-            messagebox.showwarning("Input Error", "Please enter a query.")
+            messagebox.showwarning("⚠️ Input Missing", "Please enter a query.")
 
     def on_file_open():
         file_path = filedialog.askopenfilename()
@@ -112,66 +172,85 @@ def create_ui():
     def on_url_submit():
         url = url_input.get().strip()
         if url:
+            processing_label.config(text="🔄 Fetching URL...")
+            root.update_idletasks()
             web_data = fetch_web_data(url)
             query_input.delete("1.0", "end")
             query_input.insert("1.0", web_data)
+            processing_label.config(text="")
         else:
-            messagebox.showwarning("Input Error", "Please enter a valid URL.")
+            messagebox.showwarning("⚠️ URL Missing", "Please enter a URL.")
 
-    # Create the main window
+    def typewriter_effect(text):
+        result_text.delete("1.0", "end")
+        delay = 5  # Set delay for normal typing speed
+        for i in range(len(text)):
+            result_text.insert(tk.END, text[i])  # Fix: Insert text normally (left-to-right)
+            result_text.update()
+            result_text.after(delay)
+        result_text.insert(tk.END, "\n")  # Add a newline after typing completes
+
     root = tk.Tk()
-    root.title("Deep Research AI System")
-    root.geometry("800x600")
-    root.configure(bg="#1e1e1e")  # Dark background for the futuristic look
+    root.title("🤖 Deep Research AI System")
+    root.attributes("-fullscreen", True)  # Set full screen
+    root.configure(bg="#0a0f1f")
 
-    # Add a label
-    label = tk.Label(root, text="Enter your research query:", font=("Helvetica", 14, "bold"), fg="#00ffff", bg="#1e1e1e")
-    label.pack(pady=10)
+    futuristic_font = ("Lucida Console", 12)
+    title_font = ("Orbitron", 22, "bold")
 
-    # Create a text box for input with holographic neon effect
-    query_input = tk.Text(root, height=5, width=70, font=("Helvetica", 12), bg="#333333", fg="#00ffff", insertbackground='cyan', bd=0)
-    query_input.pack(pady=10)
-    query_input.config(highlightbackground="cyan", highlightthickness=2)
+    # 🪩 Title
+    title_label = tk.Label(root, text="🌌 DEEP RESEARCH AI ASSISTANT 🌌", font=title_font,
+                           fg="#00ffff", bg="#0a0f1f")
+    title_label.pack(pady=(30, 10))
 
-    # Frame to organize buttons in a row
-    button_frame = tk.Frame(root, bg="#1e1e1e")
-    button_frame.pack(pady=10)
+    # ✍️ Query Input
+    query_input = tk.Text(root, height=6, width=85, font=futuristic_font, bg="#111827", fg="#00ffff",
+                          insertbackground="cyan", bd=0, highlightbackground="#00ffff", highlightthickness=2)
+    query_input.pack(pady=(10, 15))
 
-    # Buttons for file, URL, and submit with neon glow effect
-    file_button = tk.Button(button_frame, text="Upload File", command=on_file_open, font=("Helvetica", 12, "bold"), fg="cyan", bg="#1e1e1e", relief="flat", bd=0)
+    # 🌐 URL + Upload Row
+    url_frame = tk.Frame(root, bg="#0a0f1f")
+    url_frame.pack(pady=5)
+
+    url_input = tk.Entry(url_frame, width=50, font=futuristic_font, bg="#0f172a", fg="#00ffff",
+                         insertbackground="cyan", highlightbackground="#00ffff", highlightthickness=1, bd=0)
+    url_input.pack(side=tk.LEFT, padx=5)
+
+    url_button = tk.Button(url_frame, text="🌐 Fetch URL", command=on_url_submit,
+                           font=futuristic_font, fg="#00ffff", bg="#111827", relief="flat")
+    url_button.pack(side=tk.LEFT, padx=5)
+
+    file_button = tk.Button(url_frame, text="📂 Upload File", command=on_file_open,
+                            font=futuristic_font, fg="#00ffff", bg="#111827", relief="flat")
     file_button.pack(side=tk.LEFT, padx=5)
 
-    url_button = tk.Button(button_frame, text="Fetch URL", command=on_url_submit, font=("Helvetica", 12, "bold"), fg="cyan", bg="#1e1e1e", relief="flat", bd=0)
-    url_button.pack(side=tk.LEFT, padx=5)
-    submit_button = tk.Button(button_frame, text="Ask", command=on_query_submit, font=("Helvetica", 12, "bold"), fg="cyan", bg="#1e1e1e", relief="flat", bd=0)
-    submit_button.pack(side=tk.LEFT, padx=5)
+    # 🎯 Action Buttons
+    btn_frame = tk.Frame(root, bg="#0a0f1f")
+    btn_frame.pack(pady=10)
 
-    # Bind the Enter key to trigger the submit button
-    root.bind('<Return>', lambda event: on_query_submit())
+    def on_enter_key(event):
+        on_query_submit()
 
-    # Create a text box to display the result with neon glow effect
-    result_text = tk.Text(root, height=10, width=70, font=("Helvetica", 12), wrap="word", bg="#333333", fg="#00ffff", bd=0)
-    result_text.pack(pady=10)
-    result_text.config(highlightbackground="cyan", highlightthickness=2)
+    root.bind('<Return>', on_enter_key)
 
-    # Holographic glowing effect for buttons (hover effect)
-    def on_enter(button):
-        button.config(fg="cyan", bg="#333333", relief="raised", bd=2)
+    submit_button = tk.Button(btn_frame, text="🚀 Ask AI", command=on_query_submit,
+                              font=futuristic_font, fg="#00ffff", bg="#111827", relief="flat")
+    submit_button.pack(side=tk.LEFT, padx=10)
 
-    def on_leave(button):
-        button.config(fg="cyan", bg="#1e1e1e", relief="flat", bd=0)
+    # 🧠 Output Display
+    result_text = tk.Text(root, height=18, width=85, font=futuristic_font, wrap="word", bg="#111827",
+                          fg="#00ffff", bd=0, highlightbackground="#00ffff", highlightthickness=2)
+    result_text.pack(pady=(20, 10))
 
-    file_button.bind("<Enter>", lambda e: on_enter(file_button))
-    file_button.bind("<Leave>", lambda e: on_leave(file_button))
-
-    url_button.bind("<Enter>", lambda e: on_enter(url_button))
-    url_button.bind("<Leave>", lambda e: on_leave(url_button))
-
-    submit_button.bind("<Enter>", lambda e: on_enter(submit_button))
-    submit_button.bind("<Leave>", lambda e: on_leave(submit_button))
+    # ⏳ Processing status
+    global processing_label
+    processing_label = tk.Label(root, text="", font=("Lucida Console", 10),
+                                fg="#00ffff", bg="#0a0f1f")
+    processing_label.pack(pady=(0, 15))
 
     root.mainloop()
 
-# 🧪 Run the UI
+
+# 🚀 Launch App
 if __name__ == "__main__":
     create_ui()
