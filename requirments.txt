@@ -1,0 +1,6 @@
+pip install tkinter
+pip install langchain
+pip install langgraph
+pip install langchain-google-genai
+pip install tavily
+pip install requests
